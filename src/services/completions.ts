@@ -2080,6 +2080,23 @@ namespace ts.Completions {
                         addPropertySymbol(symbol, /* insertAwait */ false, insertQuestionDot);
                     }
                 }
+
+                if (type.symbol) {
+                    const file = getSourceFileOfNode(node);
+
+                    if (file.etsContext) {
+                        const etsContext = file.etsContext;
+
+                        etsContext.extensions.get(type.symbol)?.forEach((_) => {
+                            const methodSymbol = etsContext.getExtensionSymbol!(_.symbol, node);
+                            methodSymbol && addPropertySymbol(
+                                methodSymbol,
+                                /* insertAwait */ false,
+                                insertQuestionDot
+                            );
+                        });
+                    }
+                }
             }
 
             if (insertAwait && preferences.includeCompletionsWithInsertText) {

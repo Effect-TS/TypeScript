@@ -3536,6 +3536,29 @@ namespace ts {
         readonly unredirected: SourceFile;
     }
 
+    export interface EtsExtension {
+        symbol: Symbol;
+        expression: () => Expression;
+    }
+
+    export interface EtsModule {
+        path: StringLiteral;
+        identifier: Identifier;
+        used: boolean;
+    }
+
+    export interface EtsLocalReference {
+        originalReference: Symbol;
+        used: boolean
+    }
+
+    export interface EtsSourceFileContext {
+        modules: EtsModule[];
+        extensions: ESMap<Symbol, ESMap<string, EtsExtension>>;
+        localReferences: ESMap<Symbol, EtsLocalReference>;
+        getExtensionSymbol: (extension: Symbol, thisNode: Node) => TransientSymbol | undefined;
+    }
+
     // Source files are declarations when they are external modules.
     export interface SourceFile extends Declaration {
         readonly kind: SyntaxKind.SourceFile;
@@ -3660,6 +3683,8 @@ namespace ts {
 
         /* @internal */ exportedModulesFromDeclarationEmit?: ExportedModulesFromDeclarationEmit;
         /* @internal */ endFlowNode?: FlowNode;
+
+        etsContext?: EtsSourceFileContext;
     }
 
     /* @internal */
@@ -4910,6 +4935,7 @@ namespace ts {
         /* @internal */ isReplaceableByMethod?: boolean; // Can this Javascript class property be replaced by a method symbol?
         /* @internal */ isAssigned?: boolean;   // True if the symbol is a parameter with assignments
         /* @internal */ assignmentDeclarationMembers?: ESMap<number, Declaration>; // detected late-bound assignment declarations associated with the symbol
+        extensionsCache?: ESMap<Node, TransientSymbol | undefined>;
     }
 
     /* @internal */

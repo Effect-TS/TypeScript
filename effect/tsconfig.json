@@ -1,0 +1,13 @@
+{
+    "compilerOptions": {
+        "module": "ESNext",
+        "target": "ES2021",
+        "moduleResolution": "Node",
+        "strict": true,
+        "outDir": "build",
+        "declaration": true,
+        "skipLibCheck": true,
+        "lib": ["ES2021"]
+    },
+    "include": ["src/**/*.ts"]
+}

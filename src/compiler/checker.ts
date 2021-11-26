@@ -24994,6 +24994,7 @@ namespace ts {
 
         function checkIdentifier(node: Identifier, checkMode: CheckMode | undefined): Type {
             const symbol = getResolvedSymbol(node);
+
             if (symbol === unknownSymbol) {
                 return errorType;
             }
@@ -31007,12 +31008,126 @@ namespace ts {
             }
         }
 
+        type EtsMacro<K extends string> = CallExpression & { _ets_brand: K };
+        function isEtsMacroCall<K extends string>(node: Node, macro: K): node is EtsMacro<K> {
+            if (!isCallExpression(node)) {
+                return false;
+            }
+            const typeOfExpression = getTypeOfNode(node.expression);
+            if (typeOfExpression.symbol && typeOfExpression.symbol.valueDeclaration) {
+                return getAllJSDocTags(
+                    typeOfExpression.symbol.valueDeclaration,
+                    (_): _ is JSDocTag => _.tagName.escapedText === "ets_macro" && _.comment === macro
+                ).length > 0;
+            }
+            return false;
+        }
+
+        function isParamUsed(param: TypeParameterDeclaration, node: Node): boolean {
+            let used = false;
+            const bt = getTypeOfNode(param);
+            function visitor(node: Node): Node {
+                const t = getTypeOfNode(node);
+                if (isTypeIdenticalTo(bt, t)) {
+                    used = true;
+                }
+                return visitEachChild(node, visitor, nullTransformationContext);
+            }
+            visitNode(node, visitor);
+            return used;
+        }
+
+        function divideTypeParameters(dataFirst: FunctionDeclaration): [TypeParameterDeclaration[], TypeParameterDeclaration[]] {
+            const left: TypeParameterDeclaration[] = [];
+            const right: TypeParameterDeclaration[] = [];
+            dataFirst.typeParameters?.forEach((param) => {
+                let used = false;
+                dataFirst.parameters.forEach((p, i) => {
+                    if (i !== 0) {
+                        if (p.type && isParamUsed(param, p.type)) {
+                            used = true;
+                        }
+                    }
+                });
+                if (used) {
+                    left.push(param);
+                }
+                else {
+                    right.push(param);
+                }
+            });
+            return [left, right]
+        }
+
+        function generatePipeable(dataFirst: FunctionDeclaration): Type {
+            const returnExpression = createSyntheticExpression(dataFirst, getReturnTypeOfSignature(
+                getSignaturesOfType(getTypeOfNode(dataFirst), SignatureKind.Call)[0]!
+            ));
+            const [paramsFirst, paramsSecond] = divideTypeParameters(dataFirst);
+            const returnFunction = factory.createFunctionExpression(
+                undefined,
+                undefined,
+                undefined,
+                paramsSecond,
+                [dataFirst.parameters[0]],
+                undefined,
+                factory.createBlock(
+                    [factory.createReturnStatement(returnExpression)],
+                    true
+                )
+            );
+            setParent(returnFunction.body, returnFunction);
+            setParent((returnFunction.body as Block).statements[0], returnFunction.body);
+            const returnFunctionSymbol = createSymbol(
+                SymbolFlags.Function,
+                InternalSymbolName.Function
+            );
+            returnFunction.symbol = returnFunctionSymbol;
+            returnFunctionSymbol.declarations = [returnFunction];
+            returnFunctionSymbol.valueDeclaration = returnFunction;
+            const pipeable = factory.createFunctionDeclaration(
+                undefined,
+                [factory.createModifier(ts.SyntaxKind.DeclareKeyword)],
+                undefined,
+                dataFirst.name,
+                paramsFirst,
+                dataFirst.parameters.slice(1, dataFirst.parameters.length),
+                undefined,
+                factory.createBlock(
+                    [factory.createReturnStatement(returnFunction)],
+                    true
+                )
+            );
+            setParent(returnFunction, pipeable);
+            setParent(pipeable.body, pipeable);
+            setParent((pipeable.body as Block).statements[0], pipeable.body);
+            const pipeableSymbol = createSymbol(
+                SymbolFlags.Function,
+                InternalSymbolName.Function
+            );
+            pipeable.symbol = pipeableSymbol;
+            pipeableSymbol.declarations = [pipeable];
+            setParent(pipeable, dataFirst.parent);
+            return getTypeOfNode(pipeable);
+        }
+
+        function checkCallExpression(node: CallExpression | NewExpression, checkMode?: CheckMode): Type {
+            const checked = checkCallExpressionOriginal(node, checkMode);
+            if (isEtsMacroCall(node, "pipeable") && !isErrorType(checked)) {
+                const declaration = getTypeOfNode(node.arguments[0]).symbol.declarations?.find((_) => isFunctionDeclaration(_)) as FunctionDeclaration | undefined;
+                if (declaration) {
+                    return generatePipeable(declaration);
+                }
+            }
+            return checked;
+        }
+
         /**
          * Syntactically and semantically checks a call or new expression.
          * @param node The call/new expression to be checked.
          * @returns On success, the expression's signature's return type. On failure, anyType.
          */
-        function checkCallExpression(node: CallExpression | NewExpression, checkMode?: CheckMode): Type {
+        function checkCallExpressionOriginal(node: CallExpression | NewExpression, checkMode?: CheckMode): Type {
             if (!checkGrammarTypeArguments(node, node.typeArguments)) checkGrammarArguments(node.arguments);
 
             const signature = getResolvedSignature(node, /*candidatesOutArray*/ undefined, checkMode);
@@ -42180,6 +42295,252 @@ namespace ts {
             return getDeclarationOfKind(moduleSymbol, SyntaxKind.SourceFile);
         }
 
+        // function etsDebug(prefix: string, x: any, levels?: number) {
+        //     console.log(prefix, require("util").inspect(x, false, levels ?? 1));
+        // }
+
+        function etsInitialize() {
+            host.getSourceFiles().forEach((file) => {
+                if (!file.isDeclarationFile) {
+                    etsInitializeSourceFile(file);
+                }
+            })
+        }
+
+        function etsIdentifyExtention(symbol: Symbol) {
+            // etsDebug(`identify extension in`, symbol.escapedName);
+
+            if (symbol.valueDeclaration) {
+                const isExtension = getAllJSDocTags(
+                    symbol.valueDeclaration,
+                    (tag): tag is JSDocTag => tag.tagName.escapedText === "ets_extension"
+                ).length > 0;
+    
+                return isExtension;
+            }
+
+            return false;
+        }
+
+        function etsGetExtensionName(symbol: Symbol) {
+            return getAllJSDocTags(
+                symbol.valueDeclaration!,
+                (tag): tag is JSDocTag => tag.tagName.escapedText === "ets_extension"
+            )[0]!.comment as string;
+        }
+
+        function etsGetTargetOfExtension(symbol: Symbol) {
+            const type = getTypeOfNode(symbol.valueDeclaration!);
+            const callSignatures = getSignaturesOfType(type, SignatureKind.Call)[0]!;
+            const target = callSignatures.parameters[0];
+            const typeOfTarget = getTypeOfSymbol(target);
+
+            return typeOfTarget.symbol;
+        }
+
+        function etsGetExtensionSymbol(extension: Symbol, thisNode: Node) {
+            if (extension.extensionsCache && extension.extensionsCache.has(thisNode)) {
+                return extension.extensionsCache.get(thisNode);
+            }
+            const type = getTypeOfSymbol(extension);
+            const thisType = getTypeOfNode(thisNode);
+
+            const call = getSignaturesOfType(type, SignatureKind.Call)[0]!;
+            const method = cloneSignature(call);
+
+            const target = method.parameters[0];
+
+            method.thisParameter = createSymbolWithType(createSymbol(target.flags, "this" as __String), getTypeOfSymbol(target));
+            method.parameters = method.parameters.slice(1, method.parameters.length);
+
+            const symbol = createSymbol(extension.flags, etsGetExtensionName(extension) as __String);
+            const final = createAnonymousType(symbol, emptySymbols, [method], [], []);
+
+            const extensionMetod = createSymbolWithType(symbol, final);
+
+            const mapper = createTypeMapper(
+                call.typeParameters!,
+                call.typeParameters!.map((p)=> getConstraintFromTypeParameter(p) || anyType)
+            );
+
+            const targetType = instantiateType(getTypeOfSymbol(target), mapper);
+
+            const assignability = isTypeAssignableTo(thisType, targetType);
+
+            call.typeParameters?.forEach((p) => {
+                p.constraint = void 0;
+                p.default = void 0;
+            });
+
+            if (!extension.extensionsCache) {
+                extension.extensionsCache = new Map();
+            }
+            
+            extension.extensionsCache.set(thisNode, assignability ? extensionMetod : void 0);
+
+            if (assignability) {
+                return extensionMetod;
+            }
+        }
+
+        function etsInitializeSourceFile(file: SourceFile) {
+            file.statements.forEach((s) => {
+                if (
+                    isVariableStatement(s) &&
+                    s.declarationList.declarations.length === 1 &&
+                    isIdentifier(s.declarationList.declarations[0].name) &&
+                    s.declarationList.declarations[0].initializer &&
+                    isCallExpression(s.declarationList.declarations[0].initializer) &&
+                    isEtsMacroCall(s.declarationList.declarations[0].initializer, "pipeable")
+                ) {
+                    if (!s.jsDoc) {
+                        const type = getTypeOfNode(s.declarationList.declarations[0].initializer.arguments[0]);
+                        if (type && type.symbol) {
+                            s.jsDoc = getJSDocCommentsAndTags(type.symbol.declarations!.find((_) => isFunctionDeclaration(_))!).flatMap(
+                                (doc: JSDocTag | JSDoc) => {
+                                    if (isJSDoc(doc)) {
+                                        return [factory.createJSDocComment(
+                                            doc.comment,
+                                            doc.tags?.map((tag) =>
+                                                isJSDocUnknownTag(tag)
+                                                    ? tag.tagName.escapedText === "ets_extension"
+                                                        ? factory.updateJSDocUnknownTag(tag, factory.createIdentifier("ets_pipeable"), tag.comment)
+                                                        : tag
+                                                    : tag
+                                            )
+                                        )];
+                                    }
+                                    return [];
+                                }
+                            ) as JSDoc[];
+                        }
+                    }
+                }
+            });
+
+            // etsDebug(`initializing source:`, file.fileName);
+            // etsDebug('imports', file.imports)
+
+            const modules = file.imports.flatMap((imp) => 
+                isStringLiteral(imp) ? resolveExternalModuleTypeByLiteral(imp) : []
+            );
+            
+            const modulePaths = file.imports.flatMap((imp) => 
+                isStringLiteral(imp) ? [imp] : []
+            );
+
+            // etsDebug("imported modules", modules);
+
+            const etsModules = modulePaths.map((path): EtsModule => {
+                const identifier = factory.createUniqueName("ets_module");
+                
+                return {
+                    identifier,
+                    path,
+                    used: false
+                };
+            })
+
+            function getModuleExtensions(parent: () => Expression, type: Type, seenSoFar: Set<Symbol>): EtsExtension[] {
+                return getPropertiesOfType(type).flatMap((property): EtsExtension[] => {
+                    if (seenSoFar.has(property)) {
+                        return [];
+                    }
+                    else {
+                        seenSoFar.add(property);
+                    }
+                    if (etsIdentifyExtention(property)) {
+                        return [
+                            {
+                                symbol: property,
+                                expression: () => factory.createPropertyAccessExpression(
+                                    parent(),
+                                    factory.createIdentifier(property.escapedName.toString())
+                                )
+                            }
+                        ];
+                    }
+                    else {
+                        const propertyType = getTypeOfSymbol(property);
+
+                        if (propertyType.symbol && propertyType.symbol.valueDeclaration && isSourceFile(propertyType.symbol.valueDeclaration)) {
+                            return getModuleExtensions(
+                                () => factory.createPropertyAccessExpression(
+                                    parent(),
+                                    factory.createIdentifier(property.escapedName.toString())
+                                ),
+                                propertyType,
+                                seenSoFar
+                            );
+                        }
+                    }
+                    return [];
+                })
+            }
+
+            const etsExtensions = modulePaths.flatMap((_, i) => {
+                const identifier = factory.createUniqueName("ets_module");
+                const module = etsModules[i]!;
+
+                return getModuleExtensions(
+                    () => {
+                        module.used = true;
+                        return identifier;
+                    },
+                    modules[i],
+                    new Set()
+                );
+            });
+
+            const extensions: EtsSourceFileContext["extensions"] = new Map();
+
+            etsExtensions.forEach((extension) => {
+                const target = etsGetTargetOfExtension(extension.symbol);
+
+                if (!extensions.has(target)) {
+                    extensions.set(target, new Map());
+                }
+
+                extensions.get(target)!.set(etsGetExtensionName(extension.symbol), extension);
+            });
+
+            const localReferences = new Map<Symbol, EtsLocalReference>();
+
+            file.locals?.forEach((symbol) => {
+                if (symbol.exportSymbol && etsIdentifyExtention(symbol.exportSymbol)) {
+                    const target = etsGetTargetOfExtension(symbol.exportSymbol);
+                    const identifier = factory.createUniqueName("local");
+                    
+                    const reference: EtsLocalReference = {
+                        originalReference: symbol.exportSymbol,
+                        used: false
+                    };
+
+                    const extension: EtsExtension = {
+                        symbol: symbol.exportSymbol,
+                        expression: () => {
+                            reference.used = true;
+                            return identifier;
+                        }
+                    };
+
+                    if (!extensions.has(target)) {
+                        extensions.set(target, new Map());
+                    }
+
+                    localReferences.set(symbol.exportSymbol, reference);
+                    extensions.get(target)!.set(etsGetExtensionName(symbol.exportSymbol), extension);
+                }
+            });
+
+            file.etsContext = {
+                modules: etsModules,
+                extensions,
+                localReferences,
+                getExtensionSymbol: etsGetExtensionSymbol
+            };
+        }
+
         function initializeTypeChecker() {
             // Bind all source files and propagate errors
             for (const file of host.getSourceFiles()) {
@@ -42310,6 +42671,9 @@ namespace ts {
                 }
             });
             amalgamatedDuplicates = undefined;
+
+            // Initialize context for extensions, operators and implicits
+            etsInitialize();
         }
 
         function checkExternalEmitHelpers(location: Node, helpers: ExternalEmitHelpers) {
