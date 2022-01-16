@@ -3257,6 +3257,74 @@ namespace ts {
         readonly comment?: string | NodeArray<JSDocComment>;
     }
 
+    export interface JSDocEtsTypeTag extends JSDocTag {
+        readonly parent: JSDoc | JSDocTypeLiteral;
+        readonly tagName: Identifier;
+        readonly comment: `type ${string}`
+    }
+
+    export interface JSDocEtsUnifyTag extends JSDocTag {
+        readonly parent: JSDoc | JSDocTypeLiteral;
+        readonly tagName: Identifier;
+        readonly comment: `unify ${string}`
+    }
+
+    export interface JSDocEtsExtensionTag extends JSDocTag {
+        readonly parent: JSDoc | JSDocTypeLiteral;
+        readonly tagName: Identifier;
+        readonly comment: `fluent ${string} ${string}`
+    }
+    
+    export interface JSDocEtsGetterTag extends JSDocTag {
+        readonly parent: JSDoc | JSDocTypeLiteral;
+        readonly tagName: Identifier;
+        readonly comment: `getter ${string} ${string}`
+    }
+
+    export interface JSDocEtsStaticTag extends JSDocTag {
+        readonly parent: JSDoc | JSDocTypeLiteral;
+        readonly tagName: Identifier;
+        readonly comment: `static ${string} ${string}`
+    }
+
+    export interface JSDocEtsOperatorTag extends JSDocTag {
+        readonly parent: JSDoc | JSDocTypeLiteral;
+        readonly tagName: Identifier;
+        readonly comment: `operator ${string} ${string}`
+    }
+
+    export interface JSDocEtsMacroTag extends JSDocTag {
+        readonly parent: JSDoc | JSDocTypeLiteral;
+        readonly tagName: Identifier;
+        readonly comment: `macro ${string}`
+    }
+
+    export const enum EtsSymbolTag {
+        Fluent = "EtsFluentSymbol",
+        Static = "EtsStaticSymbol",
+        Getter = "EtsGetterSymbol"
+    }
+
+    export interface EtsFluentSymbol extends TransientSymbol {
+        etsTag: EtsSymbolTag.Fluent
+        etsDataFirstDeclaration: FunctionDeclaration;
+        etsResolvedSignatures: Signature[];
+    }
+
+    export interface EtsStaticSymbol extends TransientSymbol {
+        etsTag: EtsSymbolTag.Static;
+        etsDataFirstDeclaration: FunctionDeclaration;
+        etsResolvedSignatures: Signature[];
+    }
+
+    export interface EtsGetterSymbol extends TransientSymbol {
+        etsTag: EtsSymbolTag.Getter;
+        etsSelfType: Type;
+        etsDataFirstDeclaration: FunctionDeclaration;
+    }
+
+    export type EtsSymbol = EtsFluentSymbol | EtsStaticSymbol | EtsGetterSymbol;
+
     export interface JSDocLink extends Node {
         readonly kind: SyntaxKind.JSDocLink;
         readonly name?: EntityName | JSDocMemberName;
@@ -3660,6 +3728,8 @@ namespace ts {
 
         /* @internal */ exportedModulesFromDeclarationEmit?: ExportedModulesFromDeclarationEmit;
         /* @internal */ endFlowNode?: FlowNode;
+
+        etsImportAs?: () => string | undefined
     }
 
     /* @internal */
@@ -4417,6 +4487,17 @@ namespace ts {
         /* @internal */ isPropertyAccessible(node: Node, isSuper: boolean, isWrite: boolean, containingType: Type, property: Symbol): boolean;
         /* @internal */ getTypeOnlyAliasDeclaration(symbol: Symbol): TypeOnlyAliasDeclaration | undefined;
         /* @internal */ getMemberOverrideModifierStatus(node: ClassLikeDeclaration, member: ClassElement): MemberOverrideStatus;
+
+        getGlobalImport(file: SourceFile): string
+        getLocalImport(from: SourceFile, file: SourceFile): string
+        getExtensions(targetType: Type): ESMap<string, Symbol>
+        getFluentExtension(target: Type, name: string): { patched: Symbol, definition: SourceFile, exportName: string } | undefined
+        getGetterExtension(target: Type, name: string): { definition: SourceFile, exportName: string } | undefined
+        getStaticExtension(target: Type, name: string): { patched: Symbol, definition: SourceFile, exportName: string } | undefined
+        getOperatorExtension(target: Type, name: string): { patched: Symbol, definition: SourceFile, exportName: string } | undefined
+        shouldMakeLazy(signatureParam: Symbol, callArg: Type): boolean
+        isPipeCall(node: CallExpression): boolean
+        getCallExtension(node: Node): { patched: Symbol, definition: SourceFile, exportName: string } | undefined
     }
 
     /* @internal */
@@ -6170,6 +6251,9 @@ namespace ts {
         useDefineForClassFields?: boolean;
 
         [option: string]: CompilerOptionsValue | TsConfigSourceFile | undefined;
+
+        etsModuleDiscoveryLocalSuffix?: "js"
+        etsTracingPackageName?: string
     }
 
     export interface WatchOptions {
