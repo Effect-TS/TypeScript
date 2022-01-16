@@ -1,0 +1,10 @@
+tasks:
+  - init: npm install && npm run build
+
+github:
+  prebuilds:
+    addCheck: true
+
+vscode:
+  extensions:
+    - dbaeumer.vscode-eslint

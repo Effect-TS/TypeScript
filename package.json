@@ -128,5 +128,8 @@
     },
     "volta": {
         "node": "14.15.5"
+    },
+    "dependencies": {
+        "@effect-ts/core": "^0.52.0"
     }
 }
