@@ -39,7 +39,53 @@ namespace ts.GoToDefinition {
             });
         }
 
-        const symbol = getSymbol(node, typeChecker);
+        let symbol: Symbol | undefined;
+
+        if(isPropertyAccessExpression(parent)) {
+            const type = typeChecker.getTypeAtLocation(parent.expression);
+            const extensions = typeChecker.getExtensions(type);
+            if(extensions) {
+                const name = parent.name.escapedText.toString();
+                const staticSymbol = typeChecker.getStaticExtension(type, name);
+                if(staticSymbol && !isCallExpression(parent.parent)) {
+                    const declaration = staticSymbol.patched.valueDeclaration;
+                    if(declaration) {
+                        let start: number;
+                        let length: number;
+                        if(declaration.original && isNamedDeclaration(declaration.original)) {
+                            start = declaration.original.name.getStart();
+                            length = declaration.original.getWidth();
+                        }
+                        else if(isNamedDeclaration(declaration)) {
+                            start = declaration.name.getStart();
+                            length = declaration.getWidth();
+                        }
+                        else {
+                            start = declaration.getStart();
+                            length = declaration.getWidth();
+                        }
+
+                        if(start === -1 || length === -1) {
+                            return undefined;
+                        }
+
+                        return [{
+                            fileName: staticSymbol.definition.fileName,
+                            textSpan: { start, length },
+                            kind: SymbolDisplay.getSymbolKind(typeChecker, staticSymbol.patched, node),
+                            name: typeChecker.symbolToString(staticSymbol.patched),
+                            containerKind: undefined!,
+                            containerName: staticSymbol.patched.parent ? typeChecker.symbolToString(staticSymbol.patched.parent, node) : ""
+                        }];
+                    }
+                }
+                symbol = extensions.get(name);
+            }
+        }
+
+        if(!symbol) {
+            symbol = getSymbol(node, typeChecker);
+        }
 
         // Could not find a symbol e.g. node is string or number keyword,
         // or the symbol was an internal symbol and does not have a declaration e.g. undefined symbol

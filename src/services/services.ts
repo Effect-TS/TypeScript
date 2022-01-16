@@ -1647,6 +1647,47 @@ namespace ts {
             return Completions.getCompletionEntrySymbol(program, log, getValidSourceFile(fileName), position, { name, source }, host, preferences);
         }
 
+        // ETS EXTENSION BEGIN
+        function getUntracedDisplayParts(typeChecker: TypeChecker, node: Node, symbol: EtsStaticSymbol | EtsFluentSymbol): SymbolDisplayPart[] {
+            const declaration = symbol.etsDataFirstDeclaration;
+            const resolvedSignature = symbol.etsResolvedSignatures[0];
+            const lastParam = declaration.parameters[declaration.parameters.length - 1];
+            if(resolvedSignature && lastParam && isIdentifier(lastParam.name) && lastParam.name.escapedText.toString() === "___etsTrace") {
+                const untracedDeclaration = factory.createFunctionDeclaration(
+                    declaration.decorators,
+                    declaration.modifiers,
+                    declaration.asteriskToken,
+                    declaration.name,
+                    declaration.typeParameters,
+                    declaration.parameters.slice(0, declaration.parameters.length - 1),
+                    declaration.type,
+                    undefined
+                );
+                setParent(untracedDeclaration, declaration.parent);
+                untracedDeclaration.jsDoc = declaration.jsDoc;
+                const untracedSignature = typeChecker.createSignature(
+                    untracedDeclaration,
+                    resolvedSignature.typeParameters,
+                    resolvedSignature.thisParameter,
+                    resolvedSignature.parameters.slice(0, resolvedSignature.parameters.length - 1),
+                    resolvedSignature.getReturnType(),
+                    resolvedSignature.resolvedTypePredicate,
+                    resolvedSignature.minArgumentCount - 1,
+                    resolvedSignature.flags
+                );
+                return typeChecker.runWithCancellationToken(
+                    cancellationToken,
+                    typeChecker => signatureToDisplayParts(typeChecker, untracedSignature, getContainerNode(node))
+                );
+            } else {
+                return typeChecker.runWithCancellationToken(
+                    cancellationToken,
+                    typeChecker => signatureToDisplayParts(typeChecker, resolvedSignature, getContainerNode(node))
+                )
+            }
+        }
+        // ETS EXTENSION END
+
         function getQuickInfoAtPosition(fileName: string, position: number): QuickInfo | undefined {
             synchronizeHostData();
 
@@ -1661,8 +1702,132 @@ namespace ts {
             const nodeForQuickInfo = getNodeForQuickInfo(node);
             const symbol = getSymbolAtLocationForQuickInfo(nodeForQuickInfo, typeChecker);
 
+            // ETS EXTENSION BEGIN
+            const call = typeChecker.getCallExtension(nodeForQuickInfo)
+            if(call) {
+                const symbol = typeChecker.getTypeOfSymbol(call.patched).symbol
+                if(isEtsSymbol(symbol) && symbol.etsTag === EtsSymbolTag.Static) {
+                    let displayParts: SymbolDisplayPart[] = []
+                    displayParts.push(textPart("("));
+                    displayParts.push(textPart("call"));
+                    displayParts.push(textPart(")"));
+                    displayParts.push(spacePart());
+                    displayParts = displayParts.concat(getUntracedDisplayParts(typeChecker, nodeForQuickInfo, symbol));
+                    const declaration = symbol.etsDataFirstDeclaration;
+                    return {
+                        kind: ScriptElementKind.memberFunctionElement,
+                        kindModifiers: ScriptElementKindModifier.none,
+                        textSpan: createTextSpanFromNode(nodeForQuickInfo, sourceFile),
+                        displayParts,
+                        documentation: getDocumentationComment([declaration], typeChecker),
+                        tags: getJsDocTagsOfSignature(declaration, typeChecker)
+                    };
+                }
+            }
+            // ETS EXTENSION END
+
             if (!symbol || typeChecker.isUnknownSymbol(symbol)) {
                 const type = shouldGetType(sourceFile, nodeForQuickInfo, position) ? typeChecker.getTypeAtLocation(nodeForQuickInfo) : undefined;
+                // ETS EXTENSION BEGIN
+                if(type && type.symbol && isEtsSymbol(type.symbol)) {
+                    let displayParts: SymbolDisplayPart[] = []
+                    switch(type.symbol.etsTag) {
+                        case EtsSymbolTag.Fluent: {
+                            displayParts.push(textPart("("));
+                            displayParts.push(textPart("fluent"));
+                            displayParts.push(textPart(")"));
+                            displayParts.push(spacePart());
+                            displayParts.push(displayPart(getThisTypeNameForEtsSymbol(type.symbol), SymbolDisplayPartKind.className));
+                            displayParts.push(punctuationPart(SyntaxKind.DotToken));
+                            displayParts.push(displayPart(type.symbol.escapedName as string, SymbolDisplayPartKind.methodName));
+                            break;
+                        }
+                        case EtsSymbolTag.Static: {
+                            displayParts.push(textPart("("));
+                            displayParts.push(textPart("static"));
+                            displayParts.push(textPart(")"));
+                            displayParts.push(spacePart());
+                            displayParts.push(displayPart(type.symbol.escapedName as string, SymbolDisplayPartKind.methodName));
+                            break;
+                        }
+                        case EtsSymbolTag.Getter: {
+                            displayParts.push(textPart("("));
+                            displayParts.push(textPart("getter"));
+                            displayParts.push(textPart(")"));
+                            displayParts.push(spacePart());
+                            displayParts.push(displayPart(getThisTypeNameForEtsSymbol(type.symbol), SymbolDisplayPartKind.className));
+                            displayParts.push(punctuationPart(SyntaxKind.DotToken));
+                            displayParts.push(displayPart(type.symbol.name, SymbolDisplayPartKind.fieldName));
+                            displayParts.push(punctuationPart(SyntaxKind.ColonToken));
+                            displayParts.push(spacePart());
+                            break;
+                        }
+                    }
+                    switch(type.symbol.etsTag) {
+                        case EtsSymbolTag.Fluent:
+                        case EtsSymbolTag.Static: {
+                            const symbol = type.symbol;
+                            const declaration = symbol.etsDataFirstDeclaration;
+                            displayParts = displayParts.concat(getUntracedDisplayParts(typeChecker, nodeForQuickInfo, symbol));
+                            return {
+                                kind: ScriptElementKind.memberFunctionElement,
+                                kindModifiers: ScriptElementKindModifier.staticModifier,
+                                textSpan: createTextSpanFromNode(nodeForQuickInfo, sourceFile),
+                                displayParts,
+                                documentation: getDocumentationComment([declaration], typeChecker),
+                                tags: getJsDocTagsOfSignature(declaration, typeChecker)
+                            };
+                        }
+                        case EtsSymbolTag.Getter: {
+                            displayParts = displayParts.concat(typeChecker.runWithCancellationToken(cancellationToken, typeChecker => typeToDisplayParts(typeChecker, type, getContainerNode(nodeForQuickInfo))));
+                            return {
+                                kind: ScriptElementKind.memberGetAccessorElement,
+                                kindModifiers: ScriptElementKindModifier.none,
+                                textSpan: createTextSpanFromNode(nodeForQuickInfo, sourceFile),
+                                displayParts,
+                                documentation: getDocumentationComment([type.symbol.etsDataFirstDeclaration], typeChecker),
+                                tags: getJsDocTagsOfSignature(type.symbol.etsDataFirstDeclaration, typeChecker)
+                            }
+                        }
+                    }
+                }
+                if(isPropertyAccessExpression(node.parent)) {
+                    const parentType = typeChecker.getTypeAtLocation(node.parent.expression);
+                    const extensions = typeChecker.getExtensions(parentType);
+                    if(extensions) {
+                        const type = typeChecker.getTypeAtLocation(node);
+                        const name = node.parent.name.escapedText as string;
+                        const staticSymbol = typeChecker.getStaticExtension(parentType, name);
+                        if(type && staticSymbol && !isCallExpression(node.parent.parent)) {
+                            const declaration = staticSymbol.patched.valueDeclaration
+                            if (declaration) {
+                                let displayParts: SymbolDisplayPart[] = [];
+                                displayParts.push(textPart("("));
+                                displayParts.push(textPart("static"));
+                                displayParts.push(textPart(")"));
+                                displayParts.push(spacePart());
+                                displayParts.push(displayPart(name, SymbolDisplayPartKind.fieldName));
+                                displayParts.push(punctuationPart(SyntaxKind.ColonToken))
+                                displayParts.push(spacePart());
+                                displayParts = displayParts.concat(
+                                    typeChecker.runWithCancellationToken(
+                                        cancellationToken,
+                                        (typeChecker) => typeToDisplayParts(typeChecker, type, getContainerNode(nodeForQuickInfo))
+                                    )
+                                );
+                                return {
+                                    kind: ScriptElementKind.memberVariableElement,
+                                    kindModifiers: ScriptElementKindModifier.staticModifier,
+                                    textSpan: createTextSpanFromNode(nodeForQuickInfo, sourceFile),
+                                    displayParts,
+                                    documentation: getDocumentationComment([declaration], typeChecker),
+                                    tags: getJsDocTagsOfSignature(declaration, typeChecker)
+                                }
+                            }
+                        }
+                    }
+                }
+                // ETS EXTENSION END
                 return type && {
                     kind: ScriptElementKind.unknown,
                     kindModifiers: ScriptElementKindModifier.none,
