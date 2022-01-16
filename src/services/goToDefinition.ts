@@ -39,7 +39,35 @@ namespace ts.GoToDefinition {
             });
         }
 
-        const symbol = getSymbol(node, typeChecker);
+        let symbol: Symbol | undefined;
+
+        if(isPropertyAccessExpression(parent)) {
+            const type = typeChecker.getTypeAtLocation(parent.expression);
+            const extensions = typeChecker.getExtensions(type);
+            if(extensions) {
+                const name = parent.name.escapedText.toString();
+                const staticSymbol = typeChecker.getStaticExtension(type, name);
+                if(staticSymbol && !isCallExpression(parent.parent)) {
+                    const declaration = staticSymbol.patched.valueDeclaration!;
+                    return [{
+                        fileName: staticSymbol.definition.fileName,
+                        textSpan: {
+                            start: declaration.pos + 1,
+                            length: declaration.end - declaration.pos
+                        },
+                        kind: SymbolDisplay.getSymbolKind(typeChecker, staticSymbol.patched, node),
+                        name: typeChecker.symbolToString(staticSymbol.patched),
+                        containerKind: undefined!,
+                        containerName: staticSymbol.patched.parent ? typeChecker.symbolToString(staticSymbol.patched.parent, node) : ""
+                     }];
+                }
+                symbol = extensions.get(name);
+            }
+        }
+
+        if(!symbol) {
+            symbol = getSymbol(node, typeChecker);
+        }
 
         // Could not find a symbol e.g. node is string or number keyword,
         // or the symbol was an internal symbol and does not have a declaration e.g. undefined symbol
