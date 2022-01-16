@@ -3660,6 +3660,10 @@ namespace ts {
 
         /* @internal */ exportedModulesFromDeclarationEmit?: ExportedModulesFromDeclarationEmit;
         /* @internal */ endFlowNode?: FlowNode;
+
+        etsPackageJson?: {
+            importAs: string
+        }
     }
 
     /* @internal */

@@ -42275,6 +42275,55 @@ namespace ts {
             return getDeclarationOfKind(moduleSymbol, SyntaxKind.SourceFile);
         }
 
+        function afterInit() {
+            const cache = {} as Record<string, { name?: string; ets?: {
+                packageName?: string;
+                typeDir?: string;
+            } }>
+
+            if (host.readFile) {
+                for (const file of host.getSourceFiles()) {
+                    if (!file.etsPackageJson && file.isDeclarationFile) {
+                        const components = getPathComponents(file.fileName);
+                        for (let i = components.length - 1; i >= 1; i--) {
+                            const componentsDir = components.slice(0, i);
+                            const dir = getPathFromPathComponents(componentsDir);
+                            const path = getPathFromPathComponents([...componentsDir, "package.json"]);
+                            if (host.fileExists(path)) {
+                                try {
+                                    if (!(path in cache)) {
+                                        cache[path] = JSON.parse(host.readFile(path)!);
+                                    }
+                                    const content = cache[path]!;
+                                    const packageName = content.ets?.packageName || content["name"];
+                                    const typeDir = content.ets?.typeDir ? `${dir}/${content.ets?.typeDir}` : dir;
+                                    if (packageName && typeDir) {
+                                        // TODO(Mike): Improve this to make sure it works across systems
+                                        let importAs = packageName + "/" + getRelativePathFromDirectory(
+                                            typeDir,
+                                            file.fileName.replace(/\/index\.d\.(ts|tsx)$/, "").replace(/\.d\.(ts|tsx)$/, ""),
+                                            normalizePath
+                                        );
+                                        importAs = importAs.endsWith("/") ? importAs.substring(0, importAs.length - 1) : importAs;
+                                        importAs = importAs.startsWith("@types") ? importAs.replace(/^@types\//, "") : importAs;
+                                        file.etsPackageJson = {
+                                            importAs
+                                        };
+                                    }
+                                } catch {
+                                    //
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    if (file.etsPackageJson) {
+                        console.log(file.fileName, file.etsPackageJson);
+                    }
+                }
+            }
+        }
+
         function initializeTypeChecker() {
             // Bind all source files and propagate errors
             for (const file of host.getSourceFiles()) {
@@ -42405,6 +42454,7 @@ namespace ts {
                 }
             });
             amalgamatedDuplicates = undefined;
+            afterInit();
         }
 
         function checkExternalEmitHelpers(location: Node, helpers: ExternalEmitHelpers) {
