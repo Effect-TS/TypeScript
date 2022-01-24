@@ -49,12 +49,28 @@ namespace ts.GoToDefinition {
                 const staticSymbol = typeChecker.getStaticExtension(type, name);
                 if(staticSymbol && !isCallExpression(parent.parent)) {
                     const declaration = staticSymbol.patched.valueDeclaration!;
+                    let start: number;
+                    let length: number;
+                    if(declaration.original && isNamedDeclaration(declaration.original)) {
+                        start = declaration.original.name.getStart();
+                        length = declaration.original.getWidth();
+                    }
+                    else if(isNamedDeclaration(declaration)) {
+                        start = declaration.name.getStart();
+                        length = declaration.getWidth();
+                    }
+                    else {
+                        start = declaration.getStart();
+                        length = declaration.getWidth();
+                    }
+
+                    if(start === -1 || length === -1) {
+                        return undefined;
+                    }
+
                     return [{
                         fileName: staticSymbol.definition.fileName,
-                        textSpan: {
-                            start: declaration.pos + 1,
-                            length: declaration.end - declaration.pos
-                        },
+                        textSpan: { start, length },
                         kind: SymbolDisplay.getSymbolKind(typeChecker, staticSymbol.patched, node),
                         name: typeChecker.symbolToString(staticSymbol.patched),
                         containerKind: undefined!,
