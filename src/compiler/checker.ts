@@ -42776,22 +42776,21 @@ namespace ts {
         function getEtsFluentSymbol(name: string, dataFirst: FunctionDeclaration) {
             const type = getTypeOfNode(dataFirst);
             const signatures = getSignaturesOfType(type, SignatureKind.Call);
-            const method = etsThisifySignature(signatures[0]);
+            const methods = signatures.map(etsThisifySignature);
             const symbol = createSymbol(SymbolFlags.Function, name as __String);
             symbol.declarations = [dataFirst];
             symbol.valueDeclaration = dataFirst;
             symbol.parent = dataFirst.symbol.parent;
-            const final = createAnonymousType(symbol, emptySymbols, [method], [], []);
+            const final = createAnonymousType(symbol, emptySymbols, methods, [], []);
             return createSymbolWithType(symbol, final);
         }
         function getEtsStaticSymbol(name: string, dataFirst: FunctionDeclaration) {
             const signatures = getSignaturesOfType(getTypeOfNode(dataFirst), SignatureKind.Call);
-            const call = signatures[0];
-            const method = cloneSignature(call);
+            const methods = signatures.map(cloneSignature);
             const symbol = createSymbol(SymbolFlags.Function, name as __String);
             symbol.declarations = [dataFirst];
             symbol.parent = dataFirst.symbol.parent;
-            const final = createAnonymousType(symbol, emptySymbols, [method], [], []);
+            const final = createAnonymousType(symbol, emptySymbols, methods, [], []);
             return createSymbolWithType(symbol, final);
         }
         function etsInitTypeChecker() {
