@@ -1663,6 +1663,50 @@ namespace ts {
 
             if (!symbol || typeChecker.isUnknownSymbol(symbol)) {
                 const type = shouldGetType(sourceFile, nodeForQuickInfo, position) ? typeChecker.getTypeAtLocation(nodeForQuickInfo) : undefined;
+                // BEGIN: ___etsTrace removal
+                let callSignatures: readonly Signature[];
+                if(type && (callSignatures = type.getCallSignatures()).length > 0) {
+                    const resolvedSignature = callSignatures[0];
+                    const declaration = resolvedSignature.declaration;
+                    if(declaration && isFunctionDeclaration(declaration)) {
+                        const lastParam = declaration.parameters[declaration.parameters.length - 1];
+                        if(lastParam && isIdentifier(lastParam.name) && lastParam.name.escapedText.toString() === "___etsTrace") {
+                            const untracedDeclaration = factory.createFunctionDeclaration(
+                                declaration.decorators,
+                                declaration.modifiers,
+                                declaration.asteriskToken,
+                                declaration.name,
+                                declaration.typeParameters,
+                                declaration.parameters.slice(0, declaration.parameters.length - 1),
+                                declaration.type,
+                                undefined
+                            );
+                            setParent(untracedDeclaration, declaration.parent);
+                            untracedDeclaration.jsDoc = declaration.jsDoc;
+                            const untracedSignature = typeChecker.createSignature(
+                                untracedDeclaration,
+                                resolvedSignature.typeParameters,
+                                resolvedSignature.thisParameter,
+                                resolvedSignature.parameters.slice(0, resolvedSignature.parameters.length - 1),
+                                resolvedSignature.getReturnType(),
+                                resolvedSignature.resolvedTypePredicate,
+                                resolvedSignature.minArgumentCount - 1,
+                                resolvedSignature.flags
+                            );
+                            const symbol = typeChecker.createSymbol(SymbolFlags.Function, untracedDeclaration.name?.escapedText || "" as __String);
+                            const newType = typeChecker.createAnonymousType(symbol, new Map(), [untracedSignature], [], []);
+                            return {
+                                kind: ScriptElementKind.unknown,
+                                kindModifiers: ScriptElementKindModifier.none,
+                                textSpan: createTextSpanFromNode(nodeForQuickInfo, sourceFile),
+                                displayParts: typeChecker.runWithCancellationToken(cancellationToken, typeChecker => typeToDisplayParts(typeChecker, newType, getContainerNode(nodeForQuickInfo))),
+                                documentation: type.symbol ? type.symbol.getDocumentationComment(typeChecker) : undefined,
+                                tags: type.symbol ? type.symbol.getJsDocTags(typeChecker) : undefined
+                            };
+                        }
+                    }
+                }
+                // END: ___etsTrace removal
                 return type && {
                     kind: ScriptElementKind.unknown,
                     kindModifiers: ScriptElementKindModifier.none,
