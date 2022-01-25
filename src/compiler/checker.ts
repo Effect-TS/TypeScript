@@ -351,6 +351,7 @@ namespace ts {
         // ETS EXTENSION START
         const importAsCache = new Map<string, string>();
         const typeSymbolCache = new Map<Symbol, string>();
+        const implicitCache = new Map<string, ESMap<string, { patched: Symbol, definition: SourceFile, exportName: string }>>()
         const fluentCache = new Map<string, ESMap<string, { patched: Symbol, definition: SourceFile, exportName: string }>>();
         const operatorCache = new Map<string, ESMap<string, { patched: Symbol, definition: SourceFile, exportName: string }>>();
         const staticCache = new Map<string, ESMap<string, { patched: Symbol, definition: SourceFile, exportName: string }>>();
@@ -30675,6 +30676,57 @@ namespace ts {
             return maxParamsIndex;
         }
 
+        // ETS EXTENSION START
+        function resolveCallExpressionWithImplicits(node: CallExpression, callSignatures: readonly Signature[], checkMode: CheckMode): readonly Signature[] {
+            const implicitOverloads: Signature[] = []
+            for(let i = 0, signature = callSignatures[i]; i < callSignatures.length; i++) {
+                if(signature.parameters.length === 0) {
+                    continue;
+                }
+                for(let j = 0, param = signature.parameters[j]; j < signature.parameters.length; j++) {
+                    const type = getTypeOfSymbol(param);
+                    if(type.aliasSymbol) {
+                        const tag = type.aliasSymbol.declarations?.flatMap(collectEtsTypeTags)[0];
+                        if(tag?.comment === "type ets/Implicit") {
+                            const name = (type as IntersectionType).types[0].symbol.escapedName;
+                            const cache = implicitCache.get(name.toString());
+                            cache?.forEach(({ patched }) => {
+                                if(!patched.valueDeclaration || !isNamedDeclaration(patched.valueDeclaration) || !isIdentifier(patched.valueDeclaration.name)) {
+                                    return;
+                                }
+                                const identifier = factory.createIdentifier(patched.valueDeclaration.name.escapedText as string);
+                                identifier.symbol = patched.valueDeclaration!.symbol;
+                                const links = getNodeLinks(identifier);
+                                links.resolvedSymbol = patched.valueDeclaration!.symbol;
+                                const implicitCall = factory.updateCallExpression(
+                                    node,
+                                    node.expression,
+                                    node.typeArguments,
+                                    [identifier]
+                                );
+                                setParent(implicitCall, node.parent);
+                                setParent(identifier, implicitCall);
+                                const resolvedCall = resolveCall(implicitCall, [signature], undefined, checkMode, SignatureFlags.None);
+                                const returnType = getReturnTypeOfSignature(resolvedCall);
+                                const signatures = getSignaturesOfType(returnType, SignatureKind.Call);
+                                if(signatures.length > 0) {
+                                    implicitOverloads.push(signatures[0]);
+                                }
+                                else {
+                                    implicitOverloads.push(resolvedCall);
+                                }
+                            });
+                        }
+                    }
+                }
+            }
+            if(implicitOverloads.length === 0) {
+                return callSignatures;
+            }
+            return implicitOverloads.concat(callSignatures);
+        }
+        // ETS EXTENSION END
+
         function resolveCallExpression(node: CallExpression, candidatesOutArray: Signature[] | undefined, checkMode: CheckMode): Signature {
             if (node.expression.kind === SyntaxKind.SuperKeyword) {
                 const superType = checkSuperExpression(node.expression);
@@ -30730,9 +30782,9 @@ namespace ts {
             // Function interface, since they have none by default. This is a bit of a leap of faith
             // that the user will not add any.
             
-            let callSignatures = getSignaturesOfType(apparentType, SignatureKind.Call);
-
             // ETS EXTENSION START
+            let callSignatures = resolveCallExpressionWithImplicits(node, getSignaturesOfType(apparentType, SignatureKind.Call), checkMode);
+
             if (callSignatures.length === 0) {
                 const callExtension = getStaticExtension(apparentType, "__call");
                 
@@ -30740,6 +30792,7 @@ namespace ts {
                     callSignatures = Array.from(getSignaturesOfType(getTypeOfSymbol(callExtension.patched), SignatureKind.Call));
                 }
             }
+
             callSignatures = callSignatures.map((s) => {
                 s.parameters = s.parameters.map((p) => {
                     const type = getTypeOfSymbol(p);
@@ -42718,6 +42771,12 @@ namespace ts {
                 (tag): tag is JSDocEtsStaticTag => tag.tagName.escapedText === "ets" && typeof tag.comment === "string" && tag.comment.startsWith("static")
             );
         }
+        function collectEtsImplicitTags(statement: Node) {
+            return getAllJSDocTags(
+                statement,
+                (tag): tag is JSDocEtsImplicitTag => tag.tagName.escapedText === "ets" && typeof tag.comment === "string" && tag.comment.startsWith("implicit")
+            )
+        }
         function collectEtsOperatorTags(statement: Node) {
             return getAllJSDocTags(
                 statement,
@@ -42807,6 +42866,40 @@ namespace ts {
                                     exportName: symbol.escapedName.toString(),
                                     definition: file
                                 });
+                            }
+                        }
+                        const implicitTag = collectEtsImplicitTags(statement)[0]
+                        if(implicitTag) {
+                            const [, target, name] = implicitTag.comment.split(" ");
+                            if(!implicitCache.has(target)) {
+                                implicitCache.set(target, new Map());
+                            }
+                            const map = implicitCache.get(target)!;
+                            const decl = statement.declarationList.declarations[0]!;
+                            const symbol = getSymbolAtLocation(decl.name);
+                            if(symbol) {
+                                const newSymbol = cloneSymbol(symbol);
+                                newSymbol.escapedName = name as __String;
+                                const newDecl = factory.updateVariableDeclaration(
+                                    decl,
+                                    factory.createIdentifier(name),
+                                    decl.exclamationToken,
+                                    decl.type,
+                                    decl.initializer
+                                );
+                                setParent(newDecl, decl.parent);
+                                setParent(newDecl.name, newDecl);
+                                // @ts-expect-error
+                                newDecl.name.ets_name = name;
+                                newSymbol.declarations = [
+                                  newDecl
+                                ];
+                                newDecl.jsDoc = getJSDocCommentsAndTags(statement) as JSDoc[];
+                                map.set(name, {
+                                  patched: newSymbol,
+                                  exportName: symbol.escapedName.toString(),
+                                  definition: file
+                                })
                             }
                         }
                     }
