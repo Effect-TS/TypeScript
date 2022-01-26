@@ -3293,6 +3293,12 @@ namespace ts {
         readonly comment: `macro ${string}`
     }
 
+    export interface JSDocEtsImplicitTag extends JSDocTag {
+        readonly parent: JSDoc | JSDocTypeLiteral;
+        readonly tagName: Identifier;
+        readonly comment: `implicit ${string} ${string}`
+    }
+
     export interface JSDocLink extends Node {
         readonly kind: SyntaxKind.JSDocLink;
         readonly name?: EntityName | JSDocMemberName;
