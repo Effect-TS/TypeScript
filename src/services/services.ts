@@ -1798,7 +1798,7 @@ namespace ts {
                         const type = typeChecker.getTypeAtLocation(node);
                         const name = node.parent.name.escapedText as string;
                         const staticSymbol = typeChecker.getStaticExtension(parentType, name);
-                        if(type && staticSymbol && !isCallExpression(node.parent.parent)) {
+                        if(type && staticSymbol) {
                             const declaration = staticSymbol.patched.valueDeclaration
                             if (declaration) {
                                 let displayParts: SymbolDisplayPart[] = [];
