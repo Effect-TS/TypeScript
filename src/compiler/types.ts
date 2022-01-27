@@ -3299,6 +3299,32 @@ namespace ts {
         readonly comment: `macro ${string}`
     }
 
+    export const enum EtsSymbolTag {
+        Fluent = "EtsFluentSymbol",
+        Static = "EtsStaticSymbol",
+        Getter = "EtsGetterSymbol"
+    }
+
+    export interface EtsFluentSymbol extends TransientSymbol {
+        etsTag: EtsSymbolTag.Fluent
+        etsDataFirstDeclaration: FunctionDeclaration;
+        etsResolvedSignatures: Signature[];
+    }
+
+    export interface EtsStaticSymbol extends TransientSymbol {
+        etsTag: EtsSymbolTag.Static;
+        etsDataFirstDeclaration: FunctionDeclaration;
+        etsResolvedSignatures: Signature[];
+    }
+
+    export interface EtsGetterSymbol extends TransientSymbol {
+        etsTag: EtsSymbolTag.Getter;
+        etsSelfType: Type;
+        etsDataFirstDeclaration: FunctionDeclaration;
+    }
+
+    export type EtsSymbol = EtsFluentSymbol | EtsStaticSymbol | EtsGetterSymbol;
+
     export interface JSDocLink extends Node {
         readonly kind: SyntaxKind.JSDocLink;
         readonly name?: EntityName | JSDocMemberName;
@@ -4471,6 +4497,7 @@ namespace ts {
         getOperatorExtension(target: Type, name: string): { patched: Symbol, definition: SourceFile, exportName: string } | undefined
         shouldMakeLazy(signatureParam: Symbol, callArg: Type): boolean
         isPipeCall(node: CallExpression): boolean
+        getCallExtension(node: Node): { patched: Symbol, definition: SourceFile, exportName: string } | undefined
     }
 
     /* @internal */

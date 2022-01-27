@@ -356,6 +356,7 @@ namespace ts {
         const operatorCache = new Map<string, ESMap<string, { patched: Symbol, definition: SourceFile, exportName: string }>>();
         const staticCache = new Map<string, ESMap<string, { patched: Symbol, definition: SourceFile, exportName: string }>>();
         const identityCache = new Map<string, FunctionDeclaration>();
+        const callCache = new Map<Node, { patched: Symbol, definition: SourceFile, exportName: string }>();
         // ETS EXTENSION END
 
         // Cancellation that controls whether or not we can cancel in the middle of type checking.
@@ -781,6 +782,7 @@ namespace ts {
             getFluentExtension,
             getOperatorExtension,
             getStaticExtension,
+            getCallExtension,
             shouldMakeLazy,
             isPipeCall
             // ETS EXTENSION END
@@ -793,6 +795,9 @@ namespace ts {
                 return (type.symbol.declarations || []).flatMap(collectEtsMacroTags).filter((tag) => tag.comment === "macro pipe").length > 0;
             }
             return false;
+        }
+        function getCallExtension(node: Node) {
+            return callCache.get(node);
         }
         function shouldMakeLazy(signatureParam: Symbol, callArg: Type) {
             const type = getTypeOfParameter(signatureParam);
@@ -28696,7 +28701,9 @@ namespace ts {
                 if (getterExt) {
                     const symbol = getterExt.patched(leftType)
                     if (symbol) {
-                        return getTypeOfSymbol(symbol)
+                        const type = getTypeOfSymbol(symbol);
+                        type.symbol = symbol; // EtsGetterSymbol
+                        return type;
                     }
                 }
                 const staticExt = getStaticExtension(leftType, right.escapedText.toString())
@@ -30765,6 +30772,7 @@ namespace ts {
                 
                 if (callExtension) {
                     callSignatures = Array.from(getSignaturesOfType(getTypeOfSymbol(callExtension.patched), SignatureKind.Call));
+                    callCache.set(node.expression, callExtension);
                 }
             }
             callSignatures = callSignatures.map((s) => {
@@ -42766,14 +42774,33 @@ namespace ts {
             signature.instantiations = call.instantiations;
             return signature;
         }
+        function createEtsFluentSymbol(name: string, dataFirst: FunctionDeclaration, signatures: Signature[]): EtsFluentSymbol {
+            const symbol = createSymbol(SymbolFlags.Function, name as __String) as EtsFluentSymbol;
+            symbol.etsTag = EtsSymbolTag.Fluent;
+            symbol.etsDataFirstDeclaration = dataFirst;
+            symbol.etsResolvedSignatures = signatures;
+            return symbol;
+        }
+        function createEtsStaticSymbol(name: string, dataFirst: FunctionDeclaration, signatures: Signature[]): EtsStaticSymbol {
+            const symbol = createSymbol(SymbolFlags.Function, name as __String) as EtsStaticSymbol;
+            symbol.etsTag = EtsSymbolTag.Static;
+            symbol.etsDataFirstDeclaration = dataFirst;
+            symbol.etsResolvedSignatures = signatures;
+            return symbol;
+        }
+        function createEtsGetterSymbol(name: string, dataFirst: FunctionDeclaration, returnType: Type, selfType: Type) {
+            const symbol = createSymbol(SymbolFlags.Property, name as __String) as EtsGetterSymbol;
+            symbol.type = returnType;
+            symbol.etsTag = EtsSymbolTag.Getter;
+            symbol.etsDataFirstDeclaration = dataFirst;
+            symbol.etsSelfType = selfType;
+            return symbol;
+        }
         function getEtsFluentSymbol(name: string, dataFirst: FunctionDeclaration) {
             const type = getTypeOfNode(dataFirst);
             const signatures = getSignaturesOfType(type, SignatureKind.Call);
             const methods = signatures.map(etsThisifySignature);
-            const symbol = createSymbol(SymbolFlags.Function, name as __String);
-            symbol.declarations = [dataFirst];
-            symbol.valueDeclaration = dataFirst;
-            symbol.parent = dataFirst.symbol.parent;
+            const symbol = createEtsFluentSymbol(name, dataFirst, methods) as EtsFluentSymbol;
             const final = createAnonymousType(symbol, emptySymbols, methods, [], []);
             return createSymbolWithType(symbol, final);
         }
@@ -42787,18 +42814,13 @@ namespace ts {
                 if (isErrorType(res)) {
                     return void 0;
                 }
-                const symbol = createSymbol(SymbolFlags.Property, _name as __String);
-                symbol.type = res;
-                symbol.declarations = [_dataFirst];
-                return symbol;
+                return createEtsGetterSymbol(_name, _dataFirst, res, self);
             }
         }
         function getEtsStaticSymbol(name: string, dataFirst: FunctionDeclaration) {
             const signatures = getSignaturesOfType(getTypeOfNode(dataFirst), SignatureKind.Call);
             const methods = signatures.map(cloneSignature);
-            const symbol = createSymbol(SymbolFlags.Function, name as __String);
-            symbol.declarations = [dataFirst];
-            symbol.parent = dataFirst.symbol.parent;
+            const symbol = createEtsStaticSymbol(name, dataFirst, methods);
             const final = createAnonymousType(symbol, emptySymbols, methods, [], []);
             return createSymbolWithType(symbol, final);
         }
@@ -42809,6 +42831,7 @@ namespace ts {
             staticCache.clear();
             identityCache.clear();
             getterCache.clear();
+            callCache.clear();
             for (const file of host.getSourceFiles()) {
                 for (const statement of file.statements) {
                     if (isInterfaceDeclaration(statement) || isTypeAliasDeclaration(statement)) {
@@ -44895,4 +44918,38 @@ namespace ts {
     export function signatureHasLiteralTypes(s: Signature) {
         return !!(s.flags & SignatureFlags.HasLiteralTypes);
     }
+    // ETS EXTENSION BEGIN
+    export function isEtsSymbol(symbol: Symbol): symbol is EtsSymbol {
+        return 'etsTag' in symbol;
+    }
+    export function getNameForType(type: Type | undefined): string | undefined {
+        if(!type) {
+            return;
+        }
+        if (type.symbol && type.symbol.escapedName) {
+            return type.symbol.escapedName as string;
+        }
+        if (type.aliasSymbol && type.aliasSymbol.escapedName) {
+            return type.aliasSymbol.escapedName as string;
+        }
+    }
+    export function getThisTypeNameForEtsSymbol(symbol: EtsSymbol): string {
+        switch(symbol.etsTag) {
+            case EtsSymbolTag.Fluent: {
+                if(symbol.etsResolvedSignatures[0] && symbol.etsResolvedSignatures[0].thisParameter) {
+                    return getNameForType((symbol.etsResolvedSignatures[0].thisParameter as TransientSymbol).type) || "<anonymous>";
+                }
+                break;
+            }
+            case EtsSymbolTag.Getter: {
+                return getNameForType(symbol.etsSelfType) || "<anonymous>";
+            }
+            case EtsSymbolTag.Static: {
+                // Statics do not have a `this` type
+                break;
+            }
+        }
+        return "<anonymous>";
+    }
+    // ETS EXTENSION END
 }
