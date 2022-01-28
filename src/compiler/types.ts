@@ -3301,29 +3301,39 @@ namespace ts {
 
     export const enum EtsSymbolTag {
         Fluent = "EtsFluentSymbol",
+        FluentVariable = "EtsFluentVariableSymbol",
         Static = "EtsStaticSymbol",
         Getter = "EtsGetterSymbol"
     }
 
     export interface EtsFluentSymbol extends TransientSymbol {
         etsTag: EtsSymbolTag.Fluent
-        etsDataFirstDeclaration: FunctionDeclaration;
+        etsDeclaration: FunctionDeclaration;
         etsResolvedSignatures: Signature[];
+    }
+
+    export type SignatureWithParameters = Omit<Signature, "parameters"> & { parameters: ReadonlyArray<Symbol & { valueDeclaration: ParameterDeclaration }> }
+
+    export interface EtsFluentVariableSymbol extends TransientSymbol {
+        etsTag: EtsSymbolTag.FluentVariable;
+        etsDeclaration: VariableDeclaration & { name: Identifier };
+        etsParameters: ReadonlyArray<ParameterDeclaration>;
+        etsResolvedSignatures: SignatureWithParameters[];
     }
 
     export interface EtsStaticSymbol extends TransientSymbol {
         etsTag: EtsSymbolTag.Static;
-        etsDataFirstDeclaration: FunctionDeclaration;
+        etsDeclaration: FunctionDeclaration;
         etsResolvedSignatures: Signature[];
     }
 
     export interface EtsGetterSymbol extends TransientSymbol {
         etsTag: EtsSymbolTag.Getter;
         etsSelfType: Type;
-        etsDataFirstDeclaration: FunctionDeclaration;
+        etsDeclaration: FunctionDeclaration;
     }
 
-    export type EtsSymbol = EtsFluentSymbol | EtsStaticSymbol | EtsGetterSymbol;
+    export type EtsSymbol = EtsFluentSymbol | EtsStaticSymbol | EtsGetterSymbol | EtsFluentVariableSymbol;
 
     export interface JSDocLink extends Node {
         readonly kind: SyntaxKind.JSDocLink;

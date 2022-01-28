@@ -45,7 +45,7 @@ namespace ts.GoToDefinition {
         if(isPropertyAccessExpression(parent)) {
             const nodeType = typeChecker.getTypeAtLocation(node);
             if(nodeType.symbol && isEtsSymbol(nodeType.symbol)) {
-                symbol = nodeType.symbol.etsDataFirstDeclaration.symbol;
+                symbol = nodeType.symbol.etsDeclaration.symbol;
             } else {
                 const type = typeChecker.getTypeAtLocation(parent.expression);
                 const extensions = typeChecker.getExtensions(type);

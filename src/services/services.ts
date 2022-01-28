@@ -1648,21 +1648,36 @@ namespace ts {
         }
 
         // ETS EXTENSION BEGIN
-        function getUntracedDisplayParts(typeChecker: TypeChecker, node: Node, symbol: EtsStaticSymbol | EtsFluentSymbol): SymbolDisplayPart[] {
-            const declaration = symbol.etsDataFirstDeclaration;
+        function getUntracedDisplayParts(typeChecker: TypeChecker, node: Node, symbol: EtsStaticSymbol | EtsFluentSymbol | EtsFluentVariableSymbol): SymbolDisplayPart[] {
+            const declaration = symbol.etsDeclaration;
             const resolvedSignature = symbol.etsResolvedSignatures[0];
-            const lastParam = declaration.parameters[declaration.parameters.length - 1];
-            if(resolvedSignature && lastParam && isIdentifier(lastParam.name) && lastParam.name.escapedText.toString() === "___etsTrace") {
-                const untracedDeclaration = factory.createFunctionDeclaration(
-                    declaration.decorators,
-                    declaration.modifiers,
-                    declaration.asteriskToken,
-                    declaration.name,
-                    declaration.typeParameters,
-                    declaration.parameters.slice(0, declaration.parameters.length - 1),
-                    declaration.type,
-                    undefined
-                );
+            const paramLength = resolvedSignature.parameters.length
+            const lastParam = resolvedSignature.parameters[paramLength - 1]
+            if(resolvedSignature && lastParam && lastParam.name === "__etsTrace") {
+                let untracedDeclaration: FunctionDeclaration
+                if(symbol.etsTag === EtsSymbolTag.FluentVariable) {
+                    untracedDeclaration = factory.createFunctionDeclaration(
+                        symbol.etsDeclaration.decorators,
+                        symbol.etsDeclaration.modifiers,
+                        undefined,
+                        symbol.etsDeclaration.name,
+                        undefined,
+                        symbol.etsResolvedSignatures[0].parameters.map((s) => s.valueDeclaration).slice(0, paramLength - 1),
+                        symbol.etsDeclaration.type,
+                        undefined
+                    )
+                } else {
+                    untracedDeclaration = factory.createFunctionDeclaration(
+                        symbol.etsDeclaration.decorators,
+                        symbol.etsDeclaration.modifiers,
+                        symbol.etsDeclaration.asteriskToken,
+                        symbol.etsDeclaration.name,
+                        symbol.etsDeclaration.typeParameters,
+                        symbol.etsDeclaration.parameters.slice(0, symbol.etsDeclaration.parameters.length - 1),
+                        symbol.etsDeclaration.type,
+                        undefined
+                    );
+                }
                 setParent(untracedDeclaration, declaration.parent);
                 untracedDeclaration.jsDoc = declaration.jsDoc;
                 const untracedSignature = typeChecker.createSignature(
@@ -1713,7 +1728,7 @@ namespace ts {
                     displayParts.push(textPart(")"));
                     displayParts.push(spacePart());
                     displayParts = displayParts.concat(getUntracedDisplayParts(typeChecker, nodeForQuickInfo, symbol));
-                    const declaration = symbol.etsDataFirstDeclaration;
+                    const declaration = symbol.etsDeclaration;
                     return {
                         kind: ScriptElementKind.memberFunctionElement,
                         kindModifiers: ScriptElementKindModifier.none,
@@ -1732,6 +1747,7 @@ namespace ts {
                 if(type && type.symbol && isEtsSymbol(type.symbol)) {
                     let displayParts: SymbolDisplayPart[] = []
                     switch(type.symbol.etsTag) {
+                        case EtsSymbolTag.FluentVariable:
                         case EtsSymbolTag.Fluent: {
                             displayParts.push(textPart("("));
                             displayParts.push(textPart("fluent"));
@@ -1764,10 +1780,11 @@ namespace ts {
                         }
                     }
                     switch(type.symbol.etsTag) {
+                        case EtsSymbolTag.FluentVariable:
                         case EtsSymbolTag.Fluent:
                         case EtsSymbolTag.Static: {
                             const symbol = type.symbol;
-                            const declaration = symbol.etsDataFirstDeclaration;
+                            const declaration = symbol.etsDeclaration;
                             displayParts = displayParts.concat(getUntracedDisplayParts(typeChecker, nodeForQuickInfo, symbol));
                             return {
                                 kind: ScriptElementKind.memberFunctionElement,
@@ -1785,8 +1802,8 @@ namespace ts {
                                 kindModifiers: ScriptElementKindModifier.none,
                                 textSpan: createTextSpanFromNode(nodeForQuickInfo, sourceFile),
                                 displayParts,
-                                documentation: getDocumentationComment([type.symbol.etsDataFirstDeclaration], typeChecker),
-                                tags: getJsDocTagsOfSignature(type.symbol.etsDataFirstDeclaration, typeChecker)
+                                documentation: getDocumentationComment([type.symbol.etsDeclaration], typeChecker),
+                                tags: getJsDocTagsOfSignature(type.symbol.etsDeclaration, typeChecker)
                             }
                         }
                     }

@@ -42777,14 +42777,21 @@ namespace ts {
         function createEtsFluentSymbol(name: string, dataFirst: FunctionDeclaration, signatures: Signature[]): EtsFluentSymbol {
             const symbol = createSymbol(SymbolFlags.Function, name as __String) as EtsFluentSymbol;
             symbol.etsTag = EtsSymbolTag.Fluent;
-            symbol.etsDataFirstDeclaration = dataFirst;
+            symbol.etsDeclaration = dataFirst;
             symbol.etsResolvedSignatures = signatures;
+            return symbol;
+        }
+        function createEtsFluentVariableSymbol(name: string, declaration: VariableDeclaration & { name: Identifier }, signatures: Signature[]): EtsFluentVariableSymbol {
+            const symbol = createSymbol(SymbolFlags.Function, name as __String) as EtsFluentVariableSymbol;
+            symbol.etsTag = EtsSymbolTag.FluentVariable;
+            symbol.etsDeclaration = declaration;
+            symbol.etsResolvedSignatures = signatures as SignatureWithParameters[];
             return symbol;
         }
         function createEtsStaticSymbol(name: string, dataFirst: FunctionDeclaration, signatures: Signature[]): EtsStaticSymbol {
             const symbol = createSymbol(SymbolFlags.Function, name as __String) as EtsStaticSymbol;
             symbol.etsTag = EtsSymbolTag.Static;
-            symbol.etsDataFirstDeclaration = dataFirst;
+            symbol.etsDeclaration = dataFirst;
             symbol.etsResolvedSignatures = signatures;
             return symbol;
         }
@@ -42792,7 +42799,7 @@ namespace ts {
             const symbol = createSymbol(SymbolFlags.Property, name as __String) as EtsGetterSymbol;
             symbol.type = returnType;
             symbol.etsTag = EtsSymbolTag.Getter;
-            symbol.etsDataFirstDeclaration = dataFirst;
+            symbol.etsDeclaration = dataFirst;
             symbol.etsSelfType = selfType;
             return symbol;
         }
@@ -42803,6 +42810,16 @@ namespace ts {
             const symbol = createEtsFluentSymbol(name, dataFirst, methods) as EtsFluentSymbol;
             const final = createAnonymousType(symbol, emptySymbols, methods, [], []);
             return createSymbolWithType(symbol, final);
+        }
+        function getEtsFluentSymbolForVariableDeclaration(name: string, declaration: VariableDeclaration & { name: Identifier }) {
+            const type = getTypeOfNode(declaration);
+            const signatures = getSignaturesOfType(type, SignatureKind.Call);
+            if(signatures.every((sigSymbol) => sigSymbol.parameters.every((paramSymbol) => paramSymbol.valueDeclaration && isVariableLike(paramSymbol.valueDeclaration) && isParameterDeclaration(paramSymbol.valueDeclaration)))) {
+                const methods = signatures.map(etsThisifySignature);
+                const symbol = createEtsFluentVariableSymbol(name, declaration, methods);
+                const final = createAnonymousType(symbol, emptySymbols, methods, [], []);
+                return createSymbolWithType(symbol, final);
+            }
         }
         function getEtsGetterSymbol(_name: string, _dataFirst: FunctionDeclaration) {
             return (self: Type) => {
@@ -42824,6 +42841,143 @@ namespace ts {
             const final = createAnonymousType(symbol, emptySymbols, methods, [], []);
             return createSymbolWithType(symbol, final);
         }
+        function collectEtsSymbols(file: SourceFile, statements: NodeArray<Statement>): void {
+            for (const statement of statements) {
+                if (isInterfaceDeclaration(statement) || isTypeAliasDeclaration(statement)) {
+                    const tag = collectEtsTypeTags(statement)[0];
+                    if (tag) {
+                        const type = getTypeOfNode(statement);
+                        if (type.symbol) {
+                            typeSymbolCache.set(type.symbol, tag.comment.replace(/^type /, ""));
+                        }
+                        if (type.aliasSymbol) {
+                            typeSymbolCache.set(type.aliasSymbol, tag.comment.replace(/^type /, ""));
+                        }
+                    }
+                }
+                if (isModuleDeclaration(statement) && statement.body && isModuleBlock(statement.body)) {
+                    collectEtsSymbols(file, statement.body.statements)
+                }
+                if (isVariableStatement(statement) && statement.declarationList.declarations.length === 1) {
+                    const staticTag = collectEtsStaticTags(statement)[0];
+                    if (staticTag) {
+                        const [, target, name] = staticTag.comment.split(" ");
+                        if (!staticCache.has(target)) {
+                            staticCache.set(target, new Map());
+                        }
+                        const map = staticCache.get(target)!;
+                        const decl = statement.declarationList.declarations[0]!;
+                        const symbol = getSymbolAtLocation(decl.name);
+                        if (symbol) {
+                            const newSymbol = cloneSymbol(symbol);
+                            newSymbol.escapedName = name as __String;
+                            const newDecl = factory.updateVariableDeclaration(
+                                decl,
+                                factory.createIdentifier(name),
+                                decl.exclamationToken,
+                                decl.type,
+                                decl.initializer
+                            );
+                            setParent(newDecl, decl.parent);
+                            setParent(newDecl.name, newDecl);
+                            // @ts-expect-error
+                            newDecl.name.ets_name = name;
+                            newSymbol.declarations = [
+                                newDecl
+                            ];
+                            newSymbol.valueDeclaration = newSymbol.declarations[0];
+                            newDecl.jsDoc = getJSDocCommentsAndTags(statement) as JSDoc[];
+                            map.set(name, {
+                                patched: newSymbol,
+                                exportName: symbol.escapedName.toString(),
+                                definition: file
+                            });
+                        }
+                    }
+                    const decl = statement.declarationList.declarations[0]
+                    if(isIdentifier(decl.name)) {
+                        const fluentTag = collectEtsFluentTags(decl)[0];
+                        if(fluentTag) {
+                            const [, target, name] = fluentTag.comment.split(" ");
+                            if (!fluentCache.has(target)) {
+                                fluentCache.set(target, new Map());
+                            }
+                            const patched = getEtsFluentSymbolForVariableDeclaration(name, (decl as VariableDeclaration & { name: Identifier }))
+                            if(patched) {
+                                const map = fluentCache.get(target)!;
+                                map.set(name, {
+                                    patched,
+                                    exportName: decl.name.escapedText.toString(),
+                                    definition: file
+                                })
+                            }
+                        }
+                    }
+                }
+                if (isFunctionDeclaration(statement) && statement.name && isIdentifier(statement.name) && statement.modifiers && findIndex(statement.modifiers, t => t.kind === SyntaxKind.ExportKeyword) !== -1) {
+                    const operatorTag = collectEtsOperatorTags(statement)[0];
+                    if (operatorTag) {
+                        const symbol = getSymbolAtLocation(statement.name)
+                        if (symbol) {
+                            const [, target, name] = operatorTag.comment.split(" ");
+                            if (!operatorCache.has(target)) {
+                                operatorCache.set(target, new Map());
+                            }
+                            const map = operatorCache.get(target)!;
+                            map.set(name, {
+                                patched: symbol,
+                                exportName: statement.name.escapedText.toString(),
+                                definition: file
+                            });
+                        }
+                    }
+                    const fluentTag = collectEtsFluentTags(statement)[0];
+                    if (fluentTag) {
+                        const [, target, name] = fluentTag.comment.split(" ");
+                        if (!fluentCache.has(target)) {
+                            fluentCache.set(target, new Map());
+                        }
+                        const map = fluentCache.get(target)!;
+                        map.set(name, {
+                            patched: getEtsFluentSymbol(name, statement),
+                            exportName: statement.name.escapedText.toString(),
+                            definition: file
+                        });
+                    }
+                    const getterTag = collectEtsGetterTags(statement)[0];
+                    if (getterTag) {
+                        const [, target, name] = getterTag.comment.split(" ");
+                        if (!getterCache.has(target)) {
+                            getterCache.set(target, new Map());
+                        }
+                        const map = getterCache.get(target)!;
+                        map.set(name, {
+                            patched: getEtsGetterSymbol(name, statement),
+                            exportName: statement.name.escapedText.toString(),
+                            definition: file
+                        });
+                    }
+                    const staticTag = collectEtsStaticTags(statement)[0];
+                    if (staticTag && statement.name) {
+                        const [, target, name] = staticTag.comment.split(" ");
+                        if (!staticCache.has(target)) {
+                            staticCache.set(target, new Map());
+                        }
+                        const map = staticCache.get(target)!;
+                        map.set(name, {
+                            patched: getEtsStaticSymbol(name, statement),
+                            exportName: statement.name.escapedText.toString(),
+                            definition: file
+                        });
+                    }
+                    const identityTag = collectEtsUnifyTags(statement)[0];
+                    if (identityTag && statement.name) {
+                        const [, target] = identityTag.comment.split(" ");
+                        identityCache.set(target, statement);
+                    }
+                }
+            }
+        }
         function etsInitTypeChecker() {
             fluentCache.clear();
             operatorCache.clear();
@@ -42833,119 +42987,7 @@ namespace ts {
             getterCache.clear();
             callCache.clear();
             for (const file of host.getSourceFiles()) {
-                for (const statement of file.statements) {
-                    if (isInterfaceDeclaration(statement) || isTypeAliasDeclaration(statement)) {
-                        const tag = collectEtsTypeTags(statement)[0];
-                        if (tag) {
-                            const type = getTypeOfNode(statement);
-                            if (type.symbol) {
-                                typeSymbolCache.set(type.symbol, tag.comment.replace(/^type /, ""));
-                            }
-                            if (type.aliasSymbol) {
-                                typeSymbolCache.set(type.aliasSymbol, tag.comment.replace(/^type /, ""));
-                            }
-                        }
-                    }
-                    if (isVariableStatement(statement) && statement.declarationList.declarations.length === 1) {
-                        const tag = collectEtsStaticTags(statement)[0];
-                        if (tag) {
-                            const [, target, name] = tag.comment.split(" ");
-                            if (!staticCache.has(target)) {
-                                staticCache.set(target, new Map());
-                            }
-                            const map = staticCache.get(target)!;
-                            const decl = statement.declarationList.declarations[0]!;
-                            const symbol = getSymbolAtLocation(decl.name);
-                            if (symbol) {
-                                const newSymbol = cloneSymbol(symbol);
-                                newSymbol.escapedName = name as __String;
-                                const newDecl = factory.updateVariableDeclaration(
-                                    decl,
-                                    factory.createIdentifier(name),
-                                    decl.exclamationToken,
-                                    decl.type,
-                                    decl.initializer
-                                );
-                                setParent(newDecl, decl.parent);
-                                setParent(newDecl.name, newDecl);
-                                // @ts-expect-error
-                                newDecl.name.ets_name = name;
-                                newSymbol.declarations = [
-                                    newDecl
-                                ];
-                                newSymbol.valueDeclaration = newSymbol.declarations[0];
-                                newDecl.jsDoc = getJSDocCommentsAndTags(statement) as JSDoc[];
-                                map.set(name, {
-                                    patched: newSymbol,
-                                    exportName: symbol.escapedName.toString(),
-                                    definition: file
-                                });
-                            }
-                        }
-                    }
-                    if (isFunctionDeclaration(statement) && statement.name && isIdentifier(statement.name) && statement.modifiers && findIndex(statement.modifiers, t => t.kind === SyntaxKind.ExportKeyword) !== -1) {
-                        const operatorTag = collectEtsOperatorTags(statement)[0];
-                        if (operatorTag) {
-                            const symbol = getSymbolAtLocation(statement.name)
-                            if (symbol) {
-                                const [, target, name] = operatorTag.comment.split(" ");
-                                if (!operatorCache.has(target)) {
-                                    operatorCache.set(target, new Map());
-                                }
-                                const map = operatorCache.get(target)!;
-                                map.set(name, {
-                                    patched: symbol,
-                                    exportName: statement.name.escapedText.toString(),
-                                    definition: file
-                                });
-                            }
-                        }
-                        const fluentTag = collectEtsFluentTags(statement)[0];
-                        if (fluentTag) {
-                            const [, target, name] = fluentTag.comment.split(" ");
-                            if (!fluentCache.has(target)) {
-                                fluentCache.set(target, new Map());
-                            }
-                            const map = fluentCache.get(target)!;
-                            map.set(name, {
-                                patched: getEtsFluentSymbol(name, statement),
-                                exportName: statement.name.escapedText.toString(),
-                                definition: file
-                            });
-                        }
-                        const getterTag = collectEtsGetterTags(statement)[0];
-                        if (getterTag) {
-                            const [, target, name] = getterTag.comment.split(" ");
-                            if (!getterCache.has(target)) {
-                                getterCache.set(target, new Map());
-                            }
-                            const map = getterCache.get(target)!;
-                            map.set(name, {
-                                patched: getEtsGetterSymbol(name, statement),
-                                exportName: statement.name.escapedText.toString(),
-                                definition: file
-                            });
-                        }
-                        const staticTag = collectEtsStaticTags(statement)[0];
-                        if (staticTag && statement.name) {
-                            const [, target, name] = staticTag.comment.split(" ");
-                            if (!staticCache.has(target)) {
-                                staticCache.set(target, new Map());
-                            }
-                            const map = staticCache.get(target)!;
-                            map.set(name, {
-                                patched: getEtsStaticSymbol(name, statement),
-                                exportName: statement.name.escapedText.toString(),
-                                definition: file
-                            });
-                        }
-                        const identityTag = collectEtsUnifyTags(statement)[0];
-                        if (identityTag && statement.name) {
-                            const [, target] = identityTag.comment.split(" ");
-                            identityCache.set(target, statement);
-                        }
-                    }
-                }
+                collectEtsSymbols(file, file.statements)
             }
         }
         // ETS EXTENSION END
@@ -44935,6 +44977,7 @@ namespace ts {
     }
     export function getThisTypeNameForEtsSymbol(symbol: EtsSymbol): string {
         switch(symbol.etsTag) {
+            case EtsSymbolTag.FluentVariable:
             case EtsSymbolTag.Fluent: {
                 if(symbol.etsResolvedSignatures[0] && symbol.etsResolvedSignatures[0].thisParameter) {
                     return getNameForType((symbol.etsResolvedSignatures[0].thisParameter as TransientSymbol).type) || "<anonymous>";
